@@ -1,108 +1,167 @@
 import streamlit as st
 import pandas as pd
-import os
-import requests
-from io import BytesIO
+import cloudscraper
+from bs4 import BeautifulSoup
 from PIL import Image
-import matplotlib.pyplot as plt
+from io import BytesIO
+import requests
+import os
+import pickle
+import unicodedata
 from mplsoccer import VerticalPitch
 
-# Configuración de página y estilo Nàstic
-st.set_page_config(page_title="Nàstic Scouting Elite", page_icon="🛡️", layout="wide")
+# --- CONFIGURACIÓN Y ESTILO ---
+st.set_page_config(page_title="Nàstic Scouting - Manel Losada", page_icon="🛡️", layout="wide")
 
 st.markdown("""
     <style>
     .main { background-color: #0a0a0a; color: white; }
     .stButton>button { background-color: #8b0000; color: white; border-radius: 10px; font-weight: bold; width: 100%; }
     [data-testid="stMetricValue"] { color: #8b0000; }
-    .stDataFrame { background-color: #1a1a1a; }
+    .card { background-color: #1a1a1a; padding: 15px; border-radius: 10px; border-left: 5px solid #8b0000; margin-bottom: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- SISTEMA DE LOGIN ---
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
+# --- FUNCIONES DE PERSISTENCIA ---
+def guardar_datos(df):
+    with open('base_datos_maestra.pkl', 'wb') as f:
+        pickle.dump(df, f)
 
-if not st.session_state.authenticated:
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.image("https://upload.wikimedia.org/wikipedia/en/d/df/Gimn%C3%A0stic_tarragona_200px.png", width=150)
-        st.title("DIRECCIÓN DEPORTIVA 26-27")
-        st.subheader("App by Manel Losada")
-        password = st.text_input("Contraseña", type="password")
-        if st.button("ENTRAR"):
-            if password == "Nastic1922":
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("Contraseña incorrecta")
-    st.stop()
-
-# --- CARGA DE DATOS (EXCEL CON 3 PESTAÑAS) ---
-@st.cache_data
-def load_data():
-    archivo = "-COMPETICIONS.xlsx"
-    if os.path.exists(archivo):
-        try:
-            # Leemos las 3 pestañas del Excel
-            df1 = pd.read_excel(archivo, sheet_name="PRIMERA RFEF")
-            df2 = pd.read_excel(archivo, sheet_name="SEGUNDA RFEF")
-            df3 = pd.read_excel(archivo, sheet_name="3A RFEF")
-            
-            # Normalizar nombres de columnas
-            for df in [df1, df2, df3]:
-                if "nom_esportiu" in df.columns: df.rename(columns={"nom_esportiu": "Nombre"}, inplace=True)
-                if "posicion_especifica" in df.columns: df.rename(columns={"posicion_especifica": "Puesto"}, inplace=True)
-                if "Posición específica" in df.columns: df.rename(columns={"Posición específica": "Puesto"}, inplace=True)
-
-            return pd.concat([df1, df2, df3], ignore_index=True)
-        except Exception as e:
-            st.error(f"Error al leer el Excel: {e}")
-            return pd.DataFrame()
+def cargar_datos_maestros():
+    if os.path.exists('base_datos_maestra.pkl'):
+        with open('base_datos_maestra.pkl', 'rb') as f:
+            return pickle.load(f)
+    else:
+        # Si no hay backup, cargamos el Excel de contratos
+        archivo_excel = "-COMPETICIONS.xlsx"
+        if os.path.exists(archivo_excel):
+            df1 = pd.read_excel(archivo_excel, sheet_name="PRIMERA RFEF")
+            df2 = pd.read_excel(archivo_excel, sheet_name="SEGUNDA RFEF")
+            df3 = pd.read_excel(archivo_excel, sheet_name="3A RFEF")
+            df = pd.concat([df1, df2, df3], ignore_index=True)
+            # Normalizar columnas
+            cols_map = {'nom_esportiu': 'Nombre', 'posicion_especifica': 'Puesto', 'vencimiento_contrato': 'Contrato'}
+            df.rename(columns=cols_map, inplace=True)
+            # Inicializar columnas de scraping si no existen
+            for col in ['Nota', 'Minutos', 'Foto_Url', 'Onces_Ideales']:
+                if col not in df.columns: df[col] = 0 if col == 'Onces_Ideales' else (None if col == 'Foto_Url' else 5.0)
+            return df
     return pd.DataFrame()
 
-df_players = load_data()
+# --- LÓGICA DE SCRAPING JORNADA A JORNADA ---
+def normalizar(texto):
+    if not texto: return ""
+    return "".join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn').lower().strip()
 
-# --- MENÚ LATERAL ---
-st.sidebar.image("https://upload.wikimedia.org/wikipedia/en/d/df/Gimn%C3%A0stic_tarragona_200px.png", width=100)
-st.sidebar.title("Nàstic Scouting")
-st.sidebar.markdown("---")
-menu = st.sidebar.radio("Menú", ["🏠 Inicio", "📊 Base de Datos", "📍 Campograma Táctico"])
-st.sidebar.markdown("---")
-st.sidebar.write("👤 **By Manel Losada**")
+def ejecutar_scraping_total(df):
+    scraper = cloudscraper.create_scraper()
+    urls_once = {
+        "1ª RFEF": "https://es.besoccer.com/competicion/once_ideal/primera_rfef/2026/jornada",
+        "2ª RFEF": "https://es.besoccer.com/competicion/once_ideal/segunda_rfef/2026/jornada",
+        "3ª RFEF": "https://es.besoccer.com/competicion/once_ideal/tercera_rfef/2026/jornada"
+    }
+    
+    progreso = st.progress(0)
+    status = st.empty()
+    
+    # Reset de Onces Ideales para recalcular sumatorio total
+    df['Onces_Ideales'] = 0
 
-# --- SECCIONES ---
+    for idx, (liga, url_base) in enumerate(urls_once.items()):
+        for jor in range(1, 39): # Escanea hasta la jornada 38 o hasta que no haya más datos
+            status.write(f"🕵️‍♂️ {liga} | Analizando Jornada {jor}...")
+            try:
+                r = scraper.get(f"{url_base}{jor}", timeout=10)
+                if r.status_code != 200: break
+                
+                soup = BeautifulSoup(r.text, 'html.parser')
+                # Encontrar nombres en el Once Ideal
+                nombres_once = [n.get_text(strip=True) for n in soup.find_all('div', class_='name')]
+                
+                for n_web in nombres_once:
+                    n_norm = normalizar(n_web)
+                    # Comparar con nuestra lista de contratos
+                    for i, row in df.iterrows():
+                        if n_norm in normalizar(row['Nombre']):
+                            df.at[i, 'Onces_Ideales'] += 1
+            except: break
+        progreso.progress((idx + 1) / len(urls_once))
+    
+    guardar_datos(df) # Guardar permanentemente
+    return df
+
+# --- LOGIN ---
+if 'auth' not in st.session_state: st.session_state.auth = False
+if not st.session_state.auth:
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.image("https://upload.wikimedia.org/wikipedia/en/d/df/Gimn%C3%A0stic_tarragona_200px.png", width=120)
+        pwd = st.text_input("Contraseña Elite", type="password")
+        if st.button("ACCEDER"):
+            if pwd == "Nastic1922":
+                st.session_state.auth = True
+                st.rerun()
+    st.stop()
+
+# --- CARGA DE DATOS ---
+df_players = cargar_datos_maestros()
+
+# --- MENÚ ---
+menu = st.sidebar.radio("DIRECCIÓN DEPORTIVA", ["🏠 Inicio", "📊 Base de Datos", "📍 Campograma Táctico"])
+st.sidebar.markdown(f"**Usuario:** Manel Losada")
+
 if menu == "🏠 Inicio":
-    st.title("🏟️ Panel de Control - Nàstic")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Jugadores en Radar", len(df_players))
-    col2.metric("Temporada", "26-27")
-    col3.metric("Estado", "Conectado")
-
-    st.markdown("### Acciones Rápidas")
-    if st.button("🚀 ACTUALIZAR MERCADO (SCRAPING)"):
-        with st.spinner('Conectando con BeSoccer...'):
-            # Aquí iría tu lógica de scraping real
-            import time
-            time.sleep(2)
-            st.success("Mercado actualizado con éxito.")
+    st.title("🏟️ Panel de Control Scouting")
+    col1, col2 = st.columns(2)
+    col1.metric("Jugadores en Seguimiento", len(df_players))
+    
+    if st.button("🚀 ACTUALIZAR DATOS (SCRAPING JORNADAS)"):
+        df_players = ejecutar_scraping_total(df_players)
+        st.success("¡Base de datos actualizada y guardada!")
+        st.rerun()
 
 elif menu == "📊 Base de Datos":
-    st.title("📊 Base de Datos de Jugadores")
-    if not df_players.empty:
-        # Buscador y Filtros
-        busqueda = st.text_input("Buscar por nombre o equipo...")
-        df_filtrado = df_players[df_players['Nombre'].str.contains(busqueda, case=False, na=False)]
-        
-        st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
-    else:
-        st.warning("No hay datos cargados. Verifica el archivo Excel.")
+    st.title("📊 Contratos y Rendimiento")
+    st.dataframe(df_players, use_container_width=True, hide_index=True)
 
 elif menu == "📍 Campograma Táctico":
-    st.title("📍 Análisis Visual de Posiciones")
-    pitch = VerticalPitch(pitch_type='statsbomb', pitch_color='#1a3a1a', line_color='white')
-    fig, ax = pitch.draw(figsize=(10, 7))
+    st.title("📍 Análisis de Posiciones y Onces Ideales")
     
-    # Aquí puedes añadir la lógica para pintar las fotos según 'Puesto'
-    st.pyplot(fig)
-    st.info("Configura las coordenadas de los jugadores según su puesto en el Excel para ver sus fotos aquí.")
+    coords = {
+        'Portero': [105, 40], 'Lateral Derecho': [80, 70], 'Lateral Izquierdo': [80, 10],
+        'Central': [92, 40], 'Central Derecho': [92, 55], 'Central Izquierdo': [92, 25],
+        'Pivote': [65, 40], 'Mediocentro': [55, 40], 'Extremo Derecho': [25, 75],
+        'Extremo Izquierdo': [25, 5], 'Delantero Centro': [12, 40]
+    }
+
+    c_campo, c_info = st.columns([2, 1.2])
+
+    with c_campo:
+        pitch = VerticalPitch(pitch_type='statsbomb', pitch_color='#1a3a1a', line_color='white')
+        fig, ax = pitch.draw(figsize=(11, 9))
+        for _, row in df_players.iterrows():
+            if row['Puesto'] in coords:
+                y, x = coords[row['Puesto']]
+                # Burbuja de datos
+                ax.scatter(x, y, s=800, c='#8b0000', edgecolors='white', zorder=3)
+                ax.text(x, y-6, f"{row['Nombre']}\n{row.get('Nota', 5.0)} | {row.get('Contrato', '')}", 
+                        color='white', fontsize=8, ha='center', fontweight='bold', bbox=dict(facecolor='black', alpha=0.6))
+                # ⭐ ESTRELLA ONCES IDEALES
+                onces = int(row.get('Onces_Ideales', 0))
+                ax.text(x+5, y+5, f"⭐{onces}", color='black', fontsize=9, fontweight='bold', 
+                        bbox=dict(facecolor='#ffd700', boxstyle='circle'))
+        st.pyplot(fig)
+
+    with c_info:
+        st.subheader("🔝 TOP 5 POR POSICIÓN")
+        pos_sel = st.selectbox("Seleccionar Puesto:", list(coords.keys()))
+        top5 = df_players[df_players['Puesto'] == pos_sel].sort_values(by='Nota', ascending=False).head(5)
+        
+        for i, (_, t) in enumerate(top5.iterrows()):
+            st.markdown(f"""
+            <div class="card">
+                <h4 style="margin:0;">{i+1}. {t['Nombre']} <span style="color:#ffd700;">⭐{int(t['Onces_Ideales'])}</span></h4>
+                <p style="margin:0; font-size:0.9em;">📝 Contrato: <b>{t.get('Contrato', 'N/A')}</b></p>
+                <p style="margin:0; font-size:0.9em;">📊 Nota: {t['Nota']} | ⏱️ {t.get('Minutos', 0)}'</p>
+            </div>
+            """, unsafe_allow_html=True)
