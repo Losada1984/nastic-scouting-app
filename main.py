@@ -2,166 +2,103 @@ import streamlit as st
 import pandas as pd
 import cloudscraper
 from bs4 import BeautifulSoup
-from PIL import Image
-from io import BytesIO
-import requests
+import unicodedata
 import os
 import pickle
-import unicodedata
 from mplsoccer import VerticalPitch
 
-# --- CONFIGURACIÓN Y ESTILO ---
-st.set_page_config(page_title="Nàstic Scouting - Manel Losada", page_icon="🛡️", layout="wide")
+# --- FUNCIONES AUXILIARES ---
+def normalizar(t):
+    return "".join(c for c in unicodedata.normalize('NFD', str(t)) if unicodedata.category(c) != 'Mn').lower().strip()
 
-st.markdown("""
-    <style>
-    .main { background-color: #0a0a0a; color: white; }
-    .stButton>button { background-color: #8b0000; color: white; border-radius: 10px; font-weight: bold; width: 100%; }
-    [data-testid="stMetricValue"] { color: #8b0000; }
-    .card { background-color: #1a1a1a; padding: 15px; border-radius: 10px; border-left: 5px solid #8b0000; margin-bottom: 10px; }
-    </style>
-    """, unsafe_allow_html=True)
+def cargar_excel_contratos():
+    try:
+        # Cargamos solo la pestaña de Primera RFEF para la prueba
+        df = pd.read_excel("-COMPETICIONS.xlsx", sheet_name="PRIMERA RFEF")
+        df.rename(columns={'nom_esportiu': 'Nombre', 'posicion_especifica': 'Puesto', 'vencimiento_contrato': 'Contrato'}, inplace=True)
+        return df
+    except Exception as e:
+        st.error(f"Error al cargar Excel: {e}")
+        return pd.DataFrame()
 
-# --- FUNCIONES DE PERSISTENCIA ---
-def guardar_datos(df):
-    with open('base_datos_maestra.pkl', 'wb') as f:
-        pickle.dump(df, f)
-
-def cargar_datos_maestros():
-    if os.path.exists('base_datos_maestra.pkl'):
-        with open('base_datos_maestra.pkl', 'rb') as f:
-            return pickle.load(f)
-    else:
-        # Si no hay backup, cargamos el Excel de contratos
-        archivo_excel = "-COMPETICIONS.xlsx"
-        if os.path.exists(archivo_excel):
-            df1 = pd.read_excel(archivo_excel, sheet_name="PRIMERA RFEF")
-            df2 = pd.read_excel(archivo_excel, sheet_name="SEGUNDA RFEF")
-            df3 = pd.read_excel(archivo_excel, sheet_name="3A RFEF")
-            df = pd.concat([df1, df2, df3], ignore_index=True)
-            # Normalizar columnas
-            cols_map = {'nom_esportiu': 'Nombre', 'posicion_especifica': 'Puesto', 'vencimiento_contrato': 'Contrato'}
-            df.rename(columns=cols_map, inplace=True)
-            # Inicializar columnas de scraping si no existen
-            for col in ['Nota', 'Minutos', 'Foto_Url', 'Onces_Ideales']:
-                if col not in df.columns: df[col] = 0 if col == 'Onces_Ideales' else (None if col == 'Foto_Url' else 5.0)
-            return df
-    return pd.DataFrame()
-
-# --- LÓGICA DE SCRAPING JORNADA A JORNADA ---
-def normalizar(texto):
-    if not texto: return ""
-    return "".join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn').lower().strip()
-
-def ejecutar_scraping_total(df):
+# --- MOTOR DE SCRAPING DE PRUEBA (JORNADA 1) ---
+def test_scraping_jornada_1(df_contratos):
     scraper = cloudscraper.create_scraper()
-    urls_once = {
-        "1ª RFEF": "https://es.besoccer.com/competicion/once_ideal/primera_rfef/2026/jornada",
-        "2ª RFEF": "https://es.besoccer.com/competicion/once_ideal/segunda_rfef/2026/jornada",
-        "3ª RFEF": "https://es.besoccer.com/competicion/once_ideal/tercera_rfef/2026/jornada"
-    }
+    # URL de resultados de la Jornada 1
+    url_jornada = "https://es.besoccer.com/competicion/resultados/primera_rfef/2026/grupo1/jornada1"
     
-    progreso = st.progress(0)
     status = st.empty()
+    status.info("🔍 Accediendo a la Jornada 1 de Primera RFEF...")
     
-    # Reset de Onces Ideales para recalcular sumatorio total
-    df['Onces_Ideales'] = 0
-
-    for idx, (liga, url_base) in enumerate(urls_once.items()):
-        for jor in range(1, 39): # Escanea hasta la jornada 38 o hasta que no haya más datos
-            status.write(f"🕵️‍♂️ {liga} | Analizando Jornada {jor}...")
-            try:
-                r = scraper.get(f"{url_base}{jor}", timeout=10)
-                if r.status_code != 200: break
-                
-                soup = BeautifulSoup(r.text, 'html.parser')
-                # Encontrar nombres en el Once Ideal
-                nombres_once = [n.get_text(strip=True) for n in soup.find_all('div', class_='name')]
-                
-                for n_web in nombres_once:
-                    n_norm = normalizar(n_web)
-                    # Comparar con nuestra lista de contratos
-                    for i, row in df.iterrows():
-                        if n_norm in normalizar(row['Nombre']):
-                            df.at[i, 'Onces_Ideales'] += 1
-            except: break
-        progreso.progress((idx + 1) / len(urls_once))
+    lista_jugadores_web = []
     
-    guardar_datos(df) # Guardar permanentemente
-    return df
-
-# --- LOGIN ---
-if 'auth' not in st.session_state: st.session_state.auth = False
-if not st.session_state.auth:
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.image("https://upload.wikimedia.org/wikipedia/en/d/df/Gimn%C3%A0stic_tarragona_200px.png", width=120)
-        pwd = st.text_input("Contraseña Elite", type="password")
-        if st.button("ACCEDER"):
-            if pwd == "Nastic1922":
-                st.session_state.auth = True
-                st.rerun()
-    st.stop()
-
-# --- CARGA DE DATOS ---
-df_players = cargar_datos_maestros()
-
-# --- MENÚ ---
-menu = st.sidebar.radio("DIRECCIÓN DEPORTIVA", ["🏠 Inicio", "📊 Base de Datos", "📍 Campograma Táctico"])
-st.sidebar.markdown(f"**Usuario:** Manel Losada")
-
-if menu == "🏠 Inicio":
-    st.title("🏟️ Panel de Control Scouting")
-    col1, col2 = st.columns(2)
-    col1.metric("Jugadores en Seguimiento", len(df_players))
-    
-    if st.button("🚀 ACTUALIZAR DATOS (SCRAPING JORNADAS)"):
-        df_players = ejecutar_scraping_total(df_players)
-        st.success("¡Base de datos actualizada y guardada!")
-        st.rerun()
-
-elif menu == "📊 Base de Datos":
-    st.title("📊 Contratos y Rendimiento")
-    st.dataframe(df_players, use_container_width=True, hide_index=True)
-
-elif menu == "📍 Campograma Táctico":
-    st.title("📍 Análisis de Posiciones y Onces Ideales")
-    
-    coords = {
-        'Portero': [105, 40], 'Lateral Derecho': [80, 70], 'Lateral Izquierdo': [80, 10],
-        'Central': [92, 40], 'Central Derecho': [92, 55], 'Central Izquierdo': [92, 25],
-        'Pivote': [65, 40], 'Mediocentro': [55, 40], 'Extremo Derecho': [25, 75],
-        'Extremo Izquierdo': [25, 5], 'Delantero Centro': [12, 40]
-    }
-
-    c_campo, c_info = st.columns([2, 1.2])
-
-    with c_campo:
-        pitch = VerticalPitch(pitch_type='statsbomb', pitch_color='#1a3a1a', line_color='white')
-        fig, ax = pitch.draw(figsize=(11, 9))
-        for _, row in df_players.iterrows():
-            if row['Puesto'] in coords:
-                y, x = coords[row['Puesto']]
-                # Burbuja de datos
-                ax.scatter(x, y, s=800, c='#8b0000', edgecolors='white', zorder=3)
-                ax.text(x, y-6, f"{row['Nombre']}\n{row.get('Nota', 5.0)} | {row.get('Contrato', '')}", 
-                        color='white', fontsize=8, ha='center', fontweight='bold', bbox=dict(facecolor='black', alpha=0.6))
-                # ⭐ ESTRELLA ONCES IDEALES
-                onces = int(row.get('Onces_Ideales', 0))
-                ax.text(x+5, y+5, f"⭐{onces}", color='black', fontsize=9, fontweight='bold', 
-                        bbox=dict(facecolor='#ffd700', boxstyle='circle'))
-        st.pyplot(fig)
-
-    with c_info:
-        st.subheader("🔝 TOP 5 POR POSICIÓN")
-        pos_sel = st.selectbox("Seleccionar Puesto:", list(coords.keys()))
-        top5 = df_players[df_players['Puesto'] == pos_sel].sort_values(by='Nota', ascending=False).head(5)
+    try:
+        r = scraper.get(url_jornada)
+        soup = BeautifulSoup(r.text, 'html.parser')
         
-        for i, (_, t) in enumerate(top5.iterrows()):
+        # 1. Buscamos los links de los partidos de esa jornada
+        links_partidos = [a['href'] for a in soup.find_all('a', class_='match-link')]
+        
+        progreso = st.progress(0)
+        for i, link in enumerate(links_partidos[:3]): # Probamos con los 3 primeros partidos para ir rápido
+            status.write(f"🏟️ Analizando partido {i+1}...")
+            # Entramos en la ficha del partido para ver alineaciones y notas
+            r_p = scraper.get(link)
+            soup_p = BeautifulSoup(r_p.text, 'html.parser')
+            
+            # Buscamos filas de jugadores (titulares y suplentes)
+            for player_row in soup_p.find_all('tr', class_='player-row'):
+                nombre = player_row.find('span', class_='name').get_text(strip=True) if player_row.find('span', class_='name') else "Desconocido"
+                nota = player_row.find('div', class_='rating').get_text(strip=True) if player_row.find('div', class_='rating') else "5.0"
+                minutos = "90" # Simplificación para la prueba
+                
+                lista_jugadores_web.append({
+                    'Nombre': nombre,
+                    'Nota': nota,
+                    'Minutos': minutos
+                })
+            progreso.progress((i + 1) / 3)
+            
+        df_web = pd.DataFrame(lista_jugadores_web)
+        
+        # 2. CRUCE CON EXCEL (Vencimiento Contrato)
+        # Hacemos el merge por nombre normalizado
+        df_contratos['nombre_norm'] = df_contratos['Nombre'].apply(normalizar)
+        df_web['nombre_norm'] = df_web['Nombre'].apply(normalizar)
+        
+        df_final = pd.merge(df_web, df_contratos[['nombre_norm', 'Contrato', 'Puesto']], on='nombre_norm', how='inner')
+        
+        status.success(f"✅ Prueba completada. Se han cruzado {len(df_final)} jugadores de tu radar que jugaron en la Jornada 1.")
+        return df_final
+
+    except Exception as e:
+        st.error(f"Error en el scraping: {e}")
+        return pd.DataFrame()
+
+# --- INTERFAZ APP ---
+st.title("🧪 Modo Prueba: Jornada 1 - Primera RFEF")
+
+df_excel = cargar_excel_contratos()
+
+if st.button("▶️ INICIAR PRUEBA DE CRUCE"):
+    resultados = test_scraping_jornada_1(df_excel)
+    
+    if not resultados.empty:
+        st.subheader("📋 Resultados del Cruce (BeSoccer + Tu Excel)")
+        st.write("Estos son los jugadores que el scraper ha encontrado en la Jornada 1 y que coinciden con tu lista de contratos:")
+        
+        # Mostramos tabla con los datos que pediste
+        st.dataframe(resultados[['Nombre', 'Puesto', 'Nota', 'Contrato']], use_container_width=True)
+        
+        # Visualización tipo Ficha
+        st.markdown("### 🗂️ Vista Previa de Fichas")
+        for _, row in resultados.head(5).iterrows():
             st.markdown(f"""
-            <div class="card">
-                <h4 style="margin:0;">{i+1}. {t['Nombre']} <span style="color:#ffd700;">⭐{int(t['Onces_Ideales'])}</span></h4>
-                <p style="margin:0; font-size:0.9em;">📝 Contrato: <b>{t.get('Contrato', 'N/A')}</b></p>
-                <p style="margin:0; font-size:0.9em;">📊 Nota: {t['Nota']} | ⏱️ {t.get('Minutos', 0)}'</p>
+            <div style="background-color:#1a1a1a; padding:15px; border-radius:10px; border-left:5px solid #8b0000; margin-bottom:10px;">
+                <h4 style="margin:0; color:#8b0000;">{row['Nombre']}</h4>
+                <p style="margin:0;">📍 Posición: <b>{row['Puesto']}</b> | ⭐ Nota J1: <b>{row['Nota']}</b></p>
+                <p style="margin:0; color:#ffd700;">📅 Vencimiento Contrato: <b>{row['Contrato']}</b></p>
             </div>
             """, unsafe_allow_html=True)
+    else:
+        st.warning("No se encontraron coincidencias. Asegúrate de que los nombres en el Excel coincidan con los de BeSoccer.")
