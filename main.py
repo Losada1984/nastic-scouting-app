@@ -5,13 +5,13 @@ from bs4 import BeautifulSoup
 import unicodedata
 import time
 
-# --- 1. TU FUNCIÓN DE LIMPIEZA ---
+# --- 1. TU LÓGICA DE LIMPIEZA ---
 def limpiar_nombre_manel(texto):
     if not texto or pd.isna(texto): return ""
     texto = "".join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
     return texto.lower().strip()
 
-# --- 2. CARGA DEL EXCEL (Tus columnas reales) ---
+# --- 2. CARGA DEL EXCEL ---
 def cargar_excel_real():
     try:
         df = pd.read_excel("-COMPETICIONS.xlsx", sheet_name="PRIMERA RFEF")
@@ -19,94 +19,98 @@ def cargar_excel_real():
             df['nombre_clean_excel'] = df['Nombre'].apply(limpiar_nombre_manel)
         return df
     except Exception as e:
-        st.error(f"Error Excel: {e}")
+        st.error(f"Error al cargar Excel: {e}")
         return pd.DataFrame()
 
-# --- 3. TU LÓGICA DE SCRAPING (Extraída de tu .txt) ---
+# --- 3. SCRAPER BASADO EN TU CELDA DE CÓDIGO ---
 def scrapear_jornada_manel(df_excel):
     scraper = cloudscraper.create_scraper()
-    # URL de la jornada
     url_base = "https://es.besoccer.com/competicion/resultados/primera_rfef/2026/grupo1/jornada1"
     
-    st.info("🚀 Iniciando escaneo con tu lógica de BeSoccer...")
+    st.info("🔍 Extrayendo datos según tu script original...")
     
     try:
         response = scraper.get(url_base)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Buscamos los links de los partidos como haces tú
         match_links = [a['href'] for a in soup.find_all('a', class_='match-link')]
         
-        resultados_jornada = []
-        barara_progreso = st.progress(0)
+        datos_jugadores = []
+        progreso = st.progress(0)
 
-        for idx, link in enumerate(match_links[:6]): # Prueba con 6 partidos
-            st.write(f"Analizando: {link.split('/')[-1]}")
-            res_p = scraper.get(link)
-            soup_p = BeautifulSoup(res_p.text, 'html.parser')
+        # Recorremos los partidos como hace tu script
+        for idx, link in enumerate(match_links[:6]): # Ajustado a 6 para la prueba
+            r_p = scraper.get(link)
+            soup_p = BeautifulSoup(r_p.text, 'html.parser')
             
-            # Buscamos las tablas de jugadores (titulares y suplentes)
-            # Usamos el selector de tu script: 'tr.player-row'
-            players = soup_p.select('tr.player-row')
+            # Buscamos las filas de jugadores usando tu selector
+            # Tu script busca 'tr' con clases de jugadores
+            rows = soup_p.find_all('tr', class_=lambda x: x and 'player' in x)
             
-            for p in players:
+            for row in rows:
                 try:
-                    # Extracción de NOMBRE y NOTA tal cual lo haces tú
-                    name_tag = p.find('span', class_='name')
-                    # En tu script buscas el div 'rating' o el valor numérico
-                    nota_tag = p.find('div', class_='rating') or p.find('span', class_='num')
+                    name_tag = row.find('span', class_='name')
+                    # Tu lógica de nota: busca 'rating' o 'num'
+                    nota_tag = row.find('div', class_='rating') or row.find('span', class_='num') or row.find('div', class_='rating-box')
                     
                     if name_tag:
-                        nombre_jugador = name_tag.get_text(strip=True)
-                        nota_jugador = nota_tag.get_text(strip=True).replace(',', '.') if nota_tag else "0.0"
+                        nombre_raw = name_tag.get_text(strip=True)
                         
-                        try:
-                            nota_final = float(nota_jugador)
-                        except:
+                        # Extracción de nota idéntica a tu .txt
+                        if nota_tag:
+                            val_nota = nota_tag.get_text(strip=True).replace(',', '.')
+                            try:
+                                nota_final = float(val_nota)
+                            except:
+                                nota_final = 0.0
+                        else:
                             nota_final = 0.0
                             
-                        # CRUCE CON TU EXCEL
-                        n_clean = limpiar_nombre_manel(nombre_jugador)
+                        # CRUCE CON EXCEL
+                        n_clean = limpiar_nombre_manel(nombre_raw)
                         match = df_excel[df_excel['nombre_clean_excel'] == n_clean]
                         
                         vencimiento = match.iloc[0]['Contrato_Hasta'] if not match.empty else "NUEVO"
                         puesto = match.iloc[0]['Posición específica'] if not match.empty else "N/A"
                         
-                        resultados_jornada.append({
-                            'Jugador': nombre_jugador,
-                            'Nota': nota_final,
-                            'Contrato': vencimiento,
+                        # Guardamos con los nombres de columna que tú usas al final
+                        datos_jugadores.append({
+                            'Jugador': nombre_raw,
+                            'Nota': nota_final, # Aquí forzamos que se llame 'Nota'
+                            'Vencimiento': vencimiento,
                             'Puesto': puesto,
-                            'Estado': '✅ Radar' if not match.empty else '🔥 Nuevo'
+                            'Radar': '✅' if not match.empty else '❌'
                         })
                 except:
                     continue
             
-            barara_progreso.progress((idx + 1) / 6)
-            time.sleep(0.5) # Respetamos el tiempo de espera de tu script
+            progreso.progress((idx + 1) / 6)
+            time.sleep(0.3)
 
-        df_final = pd.DataFrame(resultados_jornada)
-        return df_final.sort_values(by='Nota', ascending=False)
+        return pd.DataFrame(datos_jugadores)
 
     except Exception as e:
-        st.error(f"Error técnico: {e}")
+        st.error(f"Error técnico en el bucle: {e}")
         return pd.DataFrame()
 
-# --- INTERFAZ STREAMLIT ---
-st.title("🛡️ Sistema de Scouting Manel")
+# --- INTERFAZ ---
+st.title("🛡️ Scouting Nàstic (Lógica de tu Script)")
 
 df_ex = cargar_excel_real()
 
-if st.button("🔍 EJECUTAR SCRAPER (Tu Lógica)"):
+if st.button("🚀 INICIAR ESCANEO"):
     if df_ex.empty:
-        st.warning("No se pudo cargar el Excel. Revisa el archivo.")
+        st.error("No hay datos en el Excel")
     else:
         resultado = scrapear_jornada_manel(df_ex)
         
         if not resultado.empty:
-            st.subheader("🔝 Top 11 de la Jornada")
+            # Ordenamos por Nota para ver el "Once Ideal"
+            resultado = resultado.sort_values(by='Nota', ascending=False).reset_index(drop=True)
+            
+            st.subheader("🔝 Top Jugadores (Tu 11 Ideal)")
             st.table(resultado.head(11))
             
-            st.subheader("📋 Datos Completos")
+            st.subheader("📋 Todos los datos extraídos")
             st.dataframe(resultado)
         else:
-            st.error("No se extrajeron datos. Revisa si la URL de BeSoccer ha cambiado.")
+            st.warning("No se encontraron jugadores con nota en estos partidos.")
