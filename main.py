@@ -3,102 +3,126 @@ import pandas as pd
 import cloudscraper
 from bs4 import BeautifulSoup
 import unicodedata
-import os
-import pickle
-from mplsoccer import VerticalPitch
 
-# --- FUNCIONES AUXILIARES ---
-def normalizar(t):
-    return "".join(c for c in unicodedata.normalize('NFD', str(t)) if unicodedata.category(c) != 'Mn').lower().strip()
+# --- FUNCIÓN DE LIMPIEZA IDENTICA A TUS TXT ---
+def normalizar_nombre(texto):
+    if not texto: return ""
+    # Quitar tildes y poner en minúsculas
+    texto = "".join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
+    return texto.lower().strip()
 
-def cargar_excel_contratos():
+def cargar_excel_manel():
     try:
-        # Cargamos solo la pestaña de Primera RFEF para la prueba
+        # Cargamos el Excel que tienes en GitHub
+        # Intentamos leer la pestaña de Primera RFEF
         df = pd.read_excel("-COMPETICIONS.xlsx", sheet_name="PRIMERA RFEF")
-        df.rename(columns={'nom_esportiu': 'Nombre', 'posicion_especifica': 'Puesto', 'vencimiento_contrato': 'Contrato'}, inplace=True)
+        
+        # Mapeamos tus columnas a lo que espera el scraper
+        # Si en tu Excel la columna se llama 'nom_esportiu', la pasamos a 'Jugador'
+        if 'nom_esportiu' in df.columns:
+            df.rename(columns={'nom_esportiu': 'Jugador'}, inplace=True)
+        elif 'Nombre' in df.columns:
+            df.rename(columns={'Nombre': 'Jugador'}, inplace=True)
+            
+        # Aseguramos que existe la columna de contrato
+        if 'vencimiento_contrato' in df.columns:
+            df.rename(columns={'vencimiento_contrato': 'Contrato'}, inplace=True)
+            
         return df
     except Exception as e:
-        st.error(f"Error al cargar Excel: {e}")
+        st.error(f"Error cargando Excel: {e}")
         return pd.DataFrame()
 
-# --- MOTOR DE SCRAPING DE PRUEBA (JORNADA 1) ---
-def test_scraping_jornada_1(df_contratos):
+# --- SCRAPER DE PRUEBA ---
+def test_jornada_1_real(df_excel):
     scraper = cloudscraper.create_scraper()
-    # URL de resultados de la Jornada 1
-    url_jornada = "https://es.besoccer.com/competicion/resultados/primera_rfef/2026/grupo1/jornada1"
+    # URL real de la Jornada 1 que aparece en tus TXT
+    url = "https://es.besoccer.com/competicion/resultados/primera_rfef/2026/grupo1/jornada1"
     
-    status = st.empty()
-    status.info("🔍 Accediendo a la Jornada 1 de Primera RFEF...")
-    
-    lista_jugadores_web = []
+    st.info(f"🛰️ Conectando con BeSoccer: Jornada 1...")
     
     try:
-        r = scraper.get(url_jornada)
+        r = scraper.get(url)
         soup = BeautifulSoup(r.text, 'html.parser')
         
-        # 1. Buscamos los links de los partidos de esa jornada
-        links_partidos = [a['href'] for a in soup.find_all('a', class_='match-link')]
+        # Buscamos todos los partidos de la jornada
+        partidos = soup.find_all('a', class_='match-link')
+        links = [p['href'] for p in partidos]
         
-        progreso = st.progress(0)
-        for i, link in enumerate(links_partidos[:3]): # Probamos con los 3 primeros partidos para ir rápido
-            status.write(f"🏟️ Analizando partido {i+1}...")
-            # Entramos en la ficha del partido para ver alineaciones y notas
-            r_p = scraper.get(link)
-            soup_p = BeautifulSoup(r_p.text, 'html.parser')
+        datos_encontrados = []
+        
+        # Analizamos los 2 primeros partidos para la prueba
+        for link in links[:2]:
+            st.write(f"📖 Leyendo acta del partido: {link.split('/')[-1]}")
+            res_p = scraper.get(link)
+            soup_p = BeautifulSoup(res_p.text, 'html.parser')
             
-            # Buscamos filas de jugadores (titulares y suplentes)
-            for player_row in soup_p.find_all('tr', class_='player-row'):
-                nombre = player_row.find('span', class_='name').get_text(strip=True) if player_row.find('span', class_='name') else "Desconocido"
-                nota = player_row.find('div', class_='rating').get_text(strip=True) if player_row.find('div', class_='rating') else "5.0"
-                minutos = "90" # Simplificación para la prueba
+            # Buscamos los jugadores en la tabla de alineaciones (clase player-row en BeSoccer)
+            filas = soup_p.find_all('tr', class_='player-row')
+            for fila in filas:
+                # Extraer nombre y nota
+                name_tag = fila.find('span', class_='name')
+                nota_tag = fila.find('div', class_='rating')
                 
-                lista_jugadores_web.append({
-                    'Nombre': nombre,
-                    'Nota': nota,
-                    'Minutos': minutos
-                })
-            progreso.progress((i + 1) / 3)
-            
-        df_web = pd.DataFrame(lista_jugadores_web)
+                if name_tag:
+                    nombre_web = name_tag.get_text(strip=True)
+                    nota_web = nota_tag.get_text(strip=True) if nota_tag else "5.0"
+                    
+                    datos_encontrados.append({
+                        'Jugador': nombre_web,
+                        'Nota': nota_web
+                    })
         
-        # 2. CRUCE CON EXCEL (Vencimiento Contrato)
-        # Hacemos el merge por nombre normalizado
-        df_contratos['nombre_norm'] = df_contratos['Nombre'].apply(normalizar)
-        df_web['nombre_norm'] = df_web['Nombre'].apply(normalizar)
+        df_web = pd.DataFrame(datos_encontrados)
         
-        df_final = pd.merge(df_web, df_contratos[['nombre_norm', 'Contrato', 'Puesto']], on='nombre_norm', how='inner')
+        # --- EL CRUCE MÁGICO ---
+        # Creamos una columna temporal "join_name" normalizada en ambos lados
+        df_excel['join_name'] = df_excel['Jugador'].apply(normalizar_nombre)
+        df_web['join_name'] = df_web['Jugador'].apply(normalizar_nombre)
         
-        status.success(f"✅ Prueba completada. Se han cruzado {len(df_final)} jugadores de tu radar que jugaron en la Jornada 1.")
-        return df_final
+        # Intentamos el cruce (si el nombre de la web contiene el nombre de tu Excel o viceversa)
+        resultados = []
+        for _, row_w in df_web.iterrows():
+            for _, row_e in df_excel.iterrows():
+                # Si el nombre del excel está dentro del nombre largo de la web (o al revés)
+                if row_e['join_name'] in row_w['join_name'] or row_w['join_name'] in row_e['join_name']:
+                    resultados.append({
+                        'Jugador': row_w['Jugador'],
+                        'Nota': row_w['Nota'],
+                        'Contrato': row_e.get('Contrato', 'Sin datos'),
+                        'Puesto': row_e.get('posicion_especifica', 'N/A')
+                    })
+        
+        return pd.DataFrame(resultados).drop_duplicates()
 
     except Exception as e:
-        st.error(f"Error en el scraping: {e}")
+        st.error(f"Error en proceso: {e}")
         return pd.DataFrame()
 
-# --- INTERFAZ APP ---
-st.title("🧪 Modo Prueba: Jornada 1 - Primera RFEF")
+# --- INTERFAZ ---
+st.title("🧪 Prueba de Cruce BeSoccer + Contratos")
 
-df_excel = cargar_excel_contratos()
+df_contratos = cargar_excel_manel()
 
-if st.button("▶️ INICIAR PRUEBA DE CRUCE"):
-    resultados = test_scraping_jornada_1(df_excel)
-    
-    if not resultados.empty:
-        st.subheader("📋 Resultados del Cruce (BeSoccer + Tu Excel)")
-        st.write("Estos son los jugadores que el scraper ha encontrado en la Jornada 1 y que coinciden con tu lista de contratos:")
+if st.button("🚀 PROBAR CRUCE JORNADA 1"):
+    if df_contratos.empty:
+        st.error("El Excel no se ha cargado correctamente.")
+    else:
+        final_df = test_jornada_1_real(df_contratos)
         
-        # Mostramos tabla con los datos que pediste
-        st.dataframe(resultados[['Nombre', 'Puesto', 'Nota', 'Contrato']], use_container_width=True)
-        
-        # Visualización tipo Ficha
-        st.markdown("### 🗂️ Vista Previa de Fichas")
-        for _, row in resultados.head(5).iterrows():
+        if not final_df.empty:
+            st.success(f"¡Cruce exitoso! Encontrados {len(final_df)} jugadores.")
+            st.dataframe(final_df, use_container_width=True)
+            
+            # Ejemplo de la primera ficha
+            j = final_df.iloc[0]
             st.markdown(f"""
-            <div style="background-color:#1a1a1a; padding:15px; border-radius:10px; border-left:5px solid #8b0000; margin-bottom:10px;">
-                <h4 style="margin:0; color:#8b0000;">{row['Nombre']}</h4>
-                <p style="margin:0;">📍 Posición: <b>{row['Puesto']}</b> | ⭐ Nota J1: <b>{row['Nota']}</b></p>
-                <p style="margin:0; color:#ffd700;">📅 Vencimiento Contrato: <b>{row['Contrato']}</b></p>
+            <div style="background-color:#1a1a1a; padding:20px; border-radius:15px; border:2px solid #8b0000;">
+                <h3 style="color:#8b0000; margin-top:0;">{j['Jugador']}</h3>
+                <p>⭐ Nota Jornada: <b>{j['Nota']}</b></p>
+                <p>📝 Vencimiento Contrato: <b style="color:#ffd700;">{j['Contrato']}</b></p>
+                <p>📍 Posición: {j['Puesto']}</p>
             </div>
             """, unsafe_allow_html=True)
-    else:
-        st.warning("No se encontraron coincidencias. Asegúrate de que los nombres en el Excel coincidan con los de BeSoccer.")
+        else:
+            st.warning("No hay coincidencias. Revisa si en la pestaña 'PRIMERA RFEF' del Excel hay jugadores que jugaran la Jornada 1.")
