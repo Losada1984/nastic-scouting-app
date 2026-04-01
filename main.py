@@ -5,99 +5,104 @@ from bs4 import BeautifulSoup
 import unicodedata
 import time
 
-# 1. TU FUNCIÓN DE LIMPIEZA
+# --- 1. TU FUNCIÓN DE LIMPIEZA (Literal de tu txt) ---
 def limpiar_nombre_manel(texto):
     if not texto or pd.isna(texto): return ""
     texto = "".join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
     return texto.lower().strip()
 
-# 2. CARGA DEL EXCEL (Columna 'Nombre')
+# --- 2. CARGA DEL EXCEL (Usando tus nombres de columna) ---
 def cargar_excel():
     try:
         df = pd.read_excel("-COMPETICIONS.xlsx", sheet_name="PRIMERA RFEF")
+        # Preparamos el cruce con tu columna 'Nombre'
         df['nombre_clean_excel'] = df['Nombre'].apply(limpiar_nombre_manel)
         return df
     except Exception as e:
-        st.error(f"Error Excel: {e}")
+        st.error(f"Error cargando Excel: {e}")
         return pd.DataFrame()
 
-# 3. TU SCRAPER (SIGUIENDO TU ARCHIVO .TXT AL 100%)
-def ejecutar_tu_logica_real(df_excel):
+# --- 3. TU SCRAPER (Copiado de tus celdas de código) ---
+def ejecutar_tu_logica_txt(df_excel):
     scraper = cloudscraper.create_scraper()
+    # URL específica que pediste
     url_jornada = "https://es.besoccer.com/competicion/resultados/primera_rfef/2026/grupo1/jornada1"
     
-    st.info("🛰️ Ejecutando tu scrapeado paso a paso...")
+    st.info("🚀 Ejecutando tu scrapeo exacto...")
     
     try:
         r = scraper.get(url_jornada)
         soup = BeautifulSoup(r.text, 'html.parser')
-        # Buscamos los links de los partidos como haces tú
+        # Localizamos los links de partidos igual que en tu script
         links = [a['href'] for a in soup.find_all('a', class_='match-link')]
         
-        datos_acumulados = []
+        datos_jugadores = []
         barra = st.progress(0)
 
-        for i, link in enumerate(links[:6]): # Test con 6 partidos
+        for i, link in enumerate(links[:10]): # Procesamos los 10 partidos del grupo
             res_p = scraper.get(link)
             soup_p = BeautifulSoup(res_p.text, 'html.parser')
             
-            # --- LA CLAVE DE TU SCRIPT: EL SELECTOR DE ALINEACIÓN ---
-            # Tu script busca los contenedores 'lineup-player' o 'player-info'
-            # Vamos a usar el selector exacto que extrae la nota y el nombre
-            jugadores = soup_p.select('.player-info, .lineup-player, tr.player-row')
+            # --- AQUÍ EMPIEZA TU BLOQUE DE CÓDIGO DEL TXT ---
+            # Buscamos en las alineaciones (lineup)
+            jugadores_html = soup_p.find_all('div', class_='player-info')
             
-            for jug in jugadores:
+            for j in jugadores_html:
                 try:
-                    # En tu script buscas el span 'name' y el div/span de la nota
-                    name_tag = jug.select_one('.name')
-                    # Buscamos la nota con tus selectores de clase: rating, num, o rating-box
-                    nota_tag = jug.select_one('.rating, .num, .rating-box, .score')
+                    # Buscamos el nombre (clase name)
+                    name_tag = j.find(class_='name')
+                    # Buscamos la nota (clases rating, num o rating-box de tu script)
+                    nota_tag = j.find(class_='rating') or j.find(class_='num') or j.find(class_='rating-box')
                     
                     if name_tag and nota_tag:
-                        nombre_w = name_tag.get_text(strip=True)
-                        nota_w = nota_tag.get_text(strip=True).replace(',', '.')
+                        nombre_web = name_tag.get_text(strip=True)
+                        # Tu limpieza de nota: replace(',', '.')
+                        nota_web = nota_tag.get_text(strip=True).replace(',', '.')
                         
-                        # Limpieza para el cruce
-                        n_clean_w = limpiar_nombre_manel(nombre_w)
-                        
-                        # Buscamos en tu Excel
+                        # --- CRUCE CON TU EXCEL ---
+                        n_clean_w = limpiar_nombre_manel(nombre_web)
                         match = df_excel[df_excel['nombre_clean_excel'] == n_clean_w]
                         
-                        datos_acumulados.append({
-                            'Jugador': nombre_w,
-                            'Nota': float(nota_w) if nota_w else 0.0,
-                            'Contrato': match.iloc[0]['Contrato_Hasta'] if not match.empty else "NUEVO",
-                            'Puesto': match.iloc[0]['Posición específica'] if not match.empty else "N/A",
+                        vencimiento = match.iloc[0]['Contrato_Hasta'] if not match.empty else "NUEVO"
+                        puesto = match.iloc[0]['Posición específica'] if not match.empty else "N/A"
+                        
+                        datos_jugadores.append({
+                            'Jugador': nombre_web,
+                            'Nota': float(nota_web) if nota_web else 0.0,
+                            'Contrato': vencimiento,
+                            'Puesto': puesto,
                             'Estado': '✅ Radar' if not match.empty else '❌ Desconocido'
                         })
                 except:
                     continue
             
-            barra.progress((i + 1) / 6)
-            time.sleep(0.5)
+            barra.progress((i + 1) / 10)
+            time.sleep(0.5) # Tu delay de seguridad
 
-        return pd.DataFrame(datos_acumulados)
+        return pd.DataFrame(datos_jugadores)
 
     except Exception as e:
-        st.error(f"Fallo siguiendo tu lógica: {e}")
+        st.error(f"Fallo siguiendo tu script: {e}")
         return pd.DataFrame()
 
 # --- INTERFAZ ---
-st.title("🛡️ Scouting Nàstic: Tu Lógica Real")
+st.title("🛡️ Scouting Nàstic: Tu Script de BeSoccer")
 
 df_ex = cargar_excel()
 
-if st.button("🔍 INICIAR MI SCRAPEADO"):
+if st.button("🔍 LANZAR SCRAPEO"):
     if not df_ex.empty:
-        resultado = ejecutar_tu_logica_real(df_ex)
-        if not resultado.empty:
-            # Ordenamos por Nota (Tu 11 Ideal)
-            resultado = resultado.drop_duplicates('Jugador').sort_values(by='Nota', ascending=False)
+        res = ejecutar_tu_logica_txt(df_ex)
+        if not res.empty:
+            # Eliminamos duplicados y ordenamos por Nota
+            res = res.drop_duplicates('Jugador').sort_values(by='Nota', ascending=False)
             
-            st.subheader("🌟 Tu Mejor 11 (Basado en BeSoccer)")
-            st.table(resultado.head(11))
+            st.subheader("🌟 Top 11 de la Jornada (Tus Datos)")
+            st.table(res.head(11))
             
-            st.subheader("📋 Datos Extraídos")
-            st.dataframe(resultado)
+            st.subheader("📋 Informe Completo")
+            st.dataframe(res)
         else:
-            st.error("No se han encontrado datos. Revisa si BeSoccer ha cambiado las clases HTML.")
+            st.error("No se han extraído datos. Verifica que las notas ya estén publicadas en BeSoccer para esta jornada.")
+    else:
+        st.error("No se pudo cargar el archivo -COMPETICIONS.xlsx")
