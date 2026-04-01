@@ -3,8 +3,9 @@ import pandas as pd
 import cloudscraper
 from bs4 import BeautifulSoup
 import unicodedata
+import time
 
-# --- 1. TU LÓGICA DE LIMPIEZA DE ACENTOS ---
+# --- 1. TU LÓGICA DE LIMPIEZA ---
 def limpiar_nombre_manel(texto):
     if not texto or pd.isna(texto): return ""
     texto = "".join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
@@ -14,6 +15,7 @@ def limpiar_nombre_manel(texto):
 def cargar_excel_real():
     try:
         df = pd.read_excel("-COMPETICIONS.xlsx", sheet_name="PRIMERA RFEF")
+        # Forzamos los nombres que detectamos antes
         if 'Nombre' in df.columns:
             df['nombre_clean_excel'] = df['Nombre'].apply(limpiar_nombre_manel)
         return df
@@ -21,86 +23,81 @@ def cargar_excel_real():
         st.error(f"Error Excel: {e}")
         return pd.DataFrame()
 
-# --- 3. SCRAPER DEL 11 IDEAL (Muestra todo, coincida o no) ---
-def obtener_once_ideal_completo(df_excel):
+# --- 3. SCRAPER BASADO EN TU DOCUMENTO (Recorre partidos) ---
+def obtener_jugadores_jornada(df_excel):
     scraper = cloudscraper.create_scraper()
-    # URL del Once Ideal de la Jornada 1
-    url = "https://es.besoccer.com/competicion/once_ideal/primera_rfef/2026/jornada1"
+    # URL de resultados de la jornada (esta nunca falla)
+    url_resultados = "https://es.besoccer.com/competicion/resultados/primera_rfef/2026/grupo1/jornada1"
     
-    st.info("⭐ Extrayendo el ONCE IDEAL de BeSoccer...")
+    st.info("🏟️ Recorriendo partidos como en tu script...")
     
     try:
-        r = scraper.get(url)
+        r = scraper.get(url_resultados)
         soup = BeautifulSoup(r.text, 'html.parser')
+        # Buscamos los links de cada partido (match-link)
+        links = [a['href'] for a in soup.find_all('a', class_='match-link')]
         
-        once_data = []
-        # Buscamos los bloques de jugadores del 11 ideal
-        jugadores_once = soup.find_all('div', class_='name')
+        todos_los_jugadores = []
         
-        for j in jugadores_once:
-            nombre_web = j.get_text(strip=True)
-            nombre_clean_web = limpiar_nombre_manel(nombre_web)
+        progreso = st.progress(0)
+        for i, link in enumerate(links):
+            # Entramos en cada partido como hace tu .txt
+            r_p = scraper.get(link)
+            soup_p = BeautifulSoup(r_p.text, 'html.parser')
             
-            # Buscamos si este jugador del 11 ideal está en tu Excel
-            match_excel = df_excel[df_excel['nombre_clean_excel'] == nombre_clean_web]
+            # Buscamos las filas de jugadores (titulares y suplentes)
+            filas = soup_p.find_all('tr', class_=lambda x: x and 'player' in x)
             
-            if not match_excel.empty:
-                # JUGADOR CONOCIDO (Está en tu lista)
-                row_e = match_excel.iloc[0]
-                once_data.append({
-                    'Jugador': nombre_web,
-                    'Estado': '✅ EN RADAR',
-                    'Contrato': row_e.get('Contrato_Hasta', 'Revisar'),
-                    'Puesto': row_e.get('Posición específica', 'N/A'),
-                    'Nota': 'ONCE IDEAL'
-                })
-            else:
-                # JUGADOR NUEVO (No está en tu lista, pero es de los mejores)
-                once_data.append({
-                    'Jugador': nombre_web,
-                    'Estado': '🔥 NUEVO TALENTO',
-                    'Contrato': 'Desconocido',
-                    'Puesto': 'Ver en Web',
-                    'Nota': 'ONCE IDEAL'
-                })
-        
-        return pd.DataFrame(once_data)
+            for fila in filas:
+                name_tag = fila.find('span', class_='name')
+                nota_tag = fila.find('div', class_='rating')
+                equipo_tag = fila.find_previous('div', class_='team-name') # Intento de pillar equipo
+                
+                if name_tag and nota_tag:
+                    nombre_web = name_tag.get_text(strip=True)
+                    nota_web = nota_tag.get_text(strip=True)
+                    
+                    # Cruce con tu Excel
+                    nombre_clean_web = limpiar_nombre_manel(nombre_web)
+                    match = df_excel[df_excel['nombre_clean_excel'] == nombre_clean_web]
+                    
+                    vencimiento = match.iloc[0]['Contrato_Hasta'] if not match.empty else "NUEVO"
+                    puesto = match.iloc[0]['Posición específica'] if not match.empty else "Desconocido"
+                    
+                    todos_los_jugadores.append({
+                        'Jugador': nombre_web,
+                        'Nota': float(nota_web.replace(',', '.')),
+                        'Contrato': vencimiento,
+                        'Puesto': puesto,
+                        'En_Radar': '✅' if not match.empty else '❌'
+                    })
+            
+            progreso.progress((i + 1) / len(links))
+            time.sleep(0.1) # Pausa suave
+            
+        df_final = pd.DataFrame(todos_los_jugadores)
+        # Ordenamos por nota para sacar el "11 Ideal" real
+        return df_final.sort_values(by='Nota', ascending=False)
 
     except Exception as e:
-        st.error(f"Fallo en Once Ideal: {e}")
+        st.error(f"Error siguiendo tu lógica: {e}")
         return pd.DataFrame()
 
 # --- INTERFAZ ---
-st.title("🛡️ Scouting Nàstic: El 11 Ideal de la Jornada")
+st.title("🛡️ Scouting Pro: Análisis de Jornada Completa")
 
 df_ex = cargar_excel_real()
 
-if st.button("🚀 VER MEJOR 11 Y CRUZAR CONTRATOS"):
-    res_once = obtener_once_ideal_completo(df_ex)
+if st.button("🚀 INICIAR BARRIDO DE PARTIDOS (Lógica .txt)"):
+    res = obtener_jugadores_jornada(df_ex)
     
-    if not res_once.empty:
-        st.success(f"Encontrados los 11 jugadores top. ¡Cruza de datos completado!")
+    if not res.empty:
+        st.subheader("⭐ Top Jugadores de la Jornada (Tu 11 Ideal)")
+        # Mostramos los 11 mejores
+        top_11 = res.head(11)
+        st.table(top_11[['Jugador', 'Nota', 'Contrato', 'En_Radar']])
         
-        # Mostramos la tabla total
-        st.dataframe(res_once, use_container_width=True)
-        
-        # Separamos visualmente los nuevos de los conocidos
-        st.divider()
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("📌 En tu Radar")
-            conocidos = res_once[res_once['Estado'] == '✅ EN RADAR']
-            if not conocidos.empty:
-                for _, c in conocidos.iterrows():
-                    st.success(f"**{c['Jugador']}** - Contrato: {c['Contrato']}")
-            else:
-                st.write("Ninguno de este 11 está en tu Excel aún.")
-
-        with col2:
-            st.subheader("🕵️‍♂️ No están en tu Excel")
-            nuevos = res_once[res_once['Estado'] == '🔥 NUEVO TALENTO']
-            for _, n in nuevos.iterrows():
-                st.warning(f"**{n['Jugador']}** - ¡Fíchalo en tu Excel!")
+        st.subheader("📋 Todos los jugadores detectados")
+        st.dataframe(res)
     else:
-        st.warning("No se pudo obtener el 11 ideal. BeSoccer puede estar actualizando los datos.")
+        st.warning("No se detectaron datos. Revisa la conexión.")
