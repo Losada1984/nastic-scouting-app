@@ -1,5 +1,6 @@
 streamlit
 pandas
+openpyxl
 cloudscraper
 beautifulsoup4
 mplsoccer
