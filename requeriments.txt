@@ -1,0 +1,9 @@
+streamlit
+pandas
+cloudscraper
+beautifulsoup4
+mplsoccer
+pillow
+requests
+matplotlib
+fpdf2
