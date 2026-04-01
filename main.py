@@ -6,15 +6,15 @@ import unicodedata
 import time
 import random
 
-# 1. TU LIMPIEZA DE SIEMPRE
+# 1. TU FUNCIÓN DE LIMPIEZA (TAL CUAL EN TU TXT)
 def limpiar_nombre_manel(texto):
     if not texto or pd.isna(texto): return ""
     texto = "".join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
     return texto.lower().strip()
 
-# 2. TU LÓGICA DE EXTRACCIÓN (CLONADA DEL TXT CON CABECERAS HUMANAS)
-def ejecutar_tu_script_final(df_excel):
-    # Configuramos el scraper para que parezca un usuario real de Windows
+# 2. TU LÓGICA DE EXTRACCIÓN (ADAPTACIÓN DIRECTA)
+def ejecutar_scouting_manel(df_excel):
+    # Usamos un scraper que simula ser un navegador real para evitar el "bloqueo"
     scraper = cloudscraper.create_scraper(
         browser={
             'browser': 'chrome',
@@ -23,97 +23,96 @@ def ejecutar_tu_script_final(df_excel):
         }
     )
     
-    # Cabeceras que envían los navegadores reales
+    # Cabeceras para que BeSoccer crea que somos un humano
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'es-ES,es;q=0.9',
-        'Referer': 'https://www.google.com/',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
+        'Referer': 'https://www.google.com/'
     }
 
     url_base = "https://es.besoccer.com/competicion/resultados/primera_rfef/2026/grupo1/jornada1"
     
-    st.info("📡 Conectando con 'Disfraz de Navegador'...")
+    st.info("🚀 Ejecutando tu lógica de escrapeo...")
     
     try:
-        # Petición con cabeceras completas
-        r = scraper.get(url_base, headers=headers, timeout=15)
+        # Petición principal
+        r = scraper.get(url_base, headers=headers, timeout=20)
         soup = BeautifulSoup(r.text, 'html.parser')
         links = [a['href'] for a in soup.find_all('a', class_='match-link')]
         
         if not links:
-            st.error("🚫 No se ven partidos. BeSoccer ha bloqueado la IP del servidor de Streamlit.")
+            st.error("❌ BeSoccer no devuelve la lista de partidos (Bloqueo de IP).")
             return pd.DataFrame()
 
-        datos_jugadores = []
+        datos_finales = []
         barra = st.progress(0)
 
-        # Procesamos partidos
-        for i, link in enumerate(links[:6]): # Test con 6 partidos
-            time.sleep(random.uniform(1, 2)) # Pausa humana aleatoria
+        # Recorremos partidos como en tu script
+        for i, link in enumerate(links[:8]): # Analizamos los primeros 8 para asegurar el 11
+            time.sleep(random.uniform(1.0, 2.5)) # Pausa aleatoria "humana"
             
-            res_p = scraper.get(link, headers=headers, timeout=15)
+            res_p = scraper.get(link, headers=headers, timeout=20)
             soup_p = BeautifulSoup(res_p.text, 'html.parser')
             
-            # TU LÓGICA EXACTA DE CLASES
-            jugadores_html = soup_p.find_all(class_=['player-info', 'lineup-player'])
+            # --- TUS SELECTORES EXACTOS DEL TXT ---
+            # Buscamos en 'player-info', que es donde tu script localiza la nota
+            jugadores_html = soup_p.select('.player-info, .lineup-player')
             
             for j in jugadores_html:
                 try:
+                    # Buscamos nombre y nota con tus clases exactas
                     name_tag = j.find(class_='name')
-                    # Buscamos la nota en tus clases de confianza
+                    # Buscamos la nota en 'rating', 'num' o 'rating-box' (como en tu celda 6)
                     nota_tag = j.find(class_=['rating', 'num', 'rating-box'])
                     
                     if name_tag and nota_tag:
-                        nombre_web = name_tag.get_text(strip=True)
-                        nota_web = nota_tag.get_text(strip=True).replace(',', '.')
+                        nombre_w = name_tag.get_text(strip=True)
+                        nota_w = nota_tag.get_text(strip=True).replace(',', '.')
                         
-                        # CRUCE CON TU EXCEL
-                        n_clean_w = limpiar_nombre_manel(nombre_web)
+                        # Cruce con tu Excel
+                        n_clean_w = limpiar_nombre_manel(nombre_w)
                         match = df_excel[df_excel['nombre_clean_excel'] == n_clean_w]
                         
                         vencimiento = match.iloc[0]['Contrato_Hasta'] if not match.empty else "NUEVO"
                         puesto = match.iloc[0]['Posición específica'] if not match.empty else "N/A"
                         
-                        datos_jugadores.append({
+                        datos_finales.append({
                             'Jugador': nombre_web,
-                            'Nota': float(nota_web) if nota_web else 0.0,
+                            'Nota': float(nota_w) if nota_w else 0.0,
                             'Vencimiento': vencimiento,
                             'Puesto': puesto,
-                            'Estado': '✅ Radar' if not match.empty else '🕵️ Descubrimiento'
+                            'Estado': '✅ Radar' if not match.empty else '🕵️ Fichaje'
                         })
                 except:
                     continue
             
-            barra.progress((i + 1) / 6)
+            barra.progress((i + 1) / 8)
 
-        return pd.DataFrame(datos_jugadores)
+        return pd.DataFrame(datos_finales)
 
     except Exception as e:
-        st.error(f"Fallo de conexión: {e}")
+        st.error(f"Error técnico: {e}")
         return pd.DataFrame()
 
-# --- INTERFAZ ---
-st.title("🛡️ Scouting Nàstic: Rompiendo el Bloqueo")
+# --- CARGA E INTERFAZ ---
+st.title("🛡️ Scouting Nàstic (Tu Script)")
 
-# Cargar Excel
 try:
     df_ex = pd.read_excel("-COMPETICIONS.xlsx", sheet_name="PRIMERA RFEF")
     df_ex['nombre_clean_excel'] = df_ex['Nombre'].apply(limpiar_nombre_manel)
 except:
-    st.error("No se pudo cargar el Excel.")
+    st.error("Fallo al cargar el Excel.")
     df_ex = pd.DataFrame()
 
-if st.button("🚀 INICIAR ESCANEO FORZADO"):
+if st.button("🔍 LANZAR ESCRAPEO"):
     if not df_ex.empty:
-        res = ejecutar_tu_script_final(df_ex)
-        if not res.empty:
-            res = res.drop_duplicates('Jugador').sort_values(by='Nota', ascending=False)
-            st.success("¡Datos extraídos con éxito!")
-            st.table(res.head(11))
-            st.dataframe(res)
+        resultado = ejecutar_scouting_manel(df_ex)
+        if not resultado.empty:
+            # Quitamos duplicados y ordenamos para el 11 IDEAL
+            resultado = resultado.drop_duplicates('Jugador').sort_values(by='Nota', ascending=False)
+            
+            st.success("¡Éxito! Aquí tienes el Mejor 11 según tus notas:")
+            st.table(resultado.head(11))
+            st.dataframe(resultado)
         else:
-            st.warning("El servidor sigue bloqueado. Prueba a esperar 1 minuto o reinicia la App.")
+            st.warning("No se han podido leer los datos. BeSoccer está bloqueando la conexión de Streamlit.")
